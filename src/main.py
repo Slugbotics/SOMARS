@@ -1,0 +1,108 @@
+from communication.node import Node
+import time
+from threading import Thread, Lock
+import os
+from pathlib import Path
+
+def get_default_nodes():
+    """
+    Returns the default list of nodes
+    Some are stored as class references to allow errors in the constructor to be caught
+    """
+    return [
+        # Examples
+        Node,
+        Node()
+    ]
+
+update_rate = 50 # Hz
+loop_time = 1.0/update_rate
+stop = False
+initializing = 0
+initializing_lock = Lock()
+
+def run_thread(node_class):
+    global stop, loop_time, initializing
+    initialized = False
+    node = None
+    name = "Unknown"
+
+    try:
+        # Detect if it is a class or object
+        if isinstance(node_class, type):
+            name = node_class.__name__
+            node = node_class()
+        else:
+            name = node_class.__class__.__name__
+            node = node_class
+        
+        # Start the node
+        node.start()
+        with initializing_lock:
+            initializing -= 1
+        initialized = True
+
+        # Wait for all nodes to start
+        while initializing > 0 and not stop:
+            time.sleep(loop_time)
+        
+        # Update this node repeatedly
+        start = time.monotonic()
+        while not stop:
+            node.update()
+            end = time.monotonic()
+
+            # Sleep to keep a constant update rate
+            if end - start < loop_time:
+                time.sleep(loop_time - (end-start))
+                end = start + loop_time
+            else:
+                time.sleep(0)
+            start = end
+    except Exception as e:
+        # Allow other nodes to update if this node failed to initialize
+        if not initialized:
+            with initializing_lock:
+                initializing -= 1
+            print(f'Error initializing {name}: {e}')
+        else:
+            print(f'Error in {name}: {e}')
+    
+    # Stop the node
+    try:
+        if node is not None:
+            node.stop()
+    except Exception as e:
+        print(f'Error stopping {name}: {e}')
+
+
+def run_nodes(nodes):
+    global stop
+    global initializing
+
+    stop = False
+    initializing += len(nodes)
+
+    # Change the working directory so that logs are in the right folders
+    parent_dir = Path(__file__).resolve().parent.parent
+    os.chdir(parent_dir)
+
+    threads = []
+    for n in nodes:
+        threads.append(Thread(target=run_thread, args=(n,)))
+    for t in threads:
+        t.start()
+    while not stop:
+        try:
+            time.sleep(0.5)
+        except KeyboardInterrupt:
+            print()
+            stop = True
+        except Exception as e:
+            print(f'Error in main loop: {e}')
+            stop = True
+    for t in threads:
+        t.join()
+
+if __name__ == "__main__":
+    run_nodes(get_default_nodes())
